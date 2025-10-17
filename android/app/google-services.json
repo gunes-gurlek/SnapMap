@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "358494008737",
+    "firebase_url": "https://snapmap-f4706-default-rtdb.europe-west1.firebasedatabase.app",
+    "project_id": "snapmap-f4706",
+    "storage_bucket": "snapmap-f4706.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:358494008737:android:4790598aef9137203fc7e0",
+        "android_client_info": {
+          "package_name": "com.baskent.snapmap"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCTXaGW_mHYuoAJRKBqsA26WFPh9rNV33k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
