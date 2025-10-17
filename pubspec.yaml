@@ -87,3 +87,6 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+firebase_core: ^3.6.0
+firebase_auth: ^5.3.0
+google_fonts: ^6.2.1
