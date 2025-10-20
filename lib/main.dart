@@ -1,6 +1,8 @@
 // lib/main.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:snapmap/friends_screen.dart';
+import 'package:snapmap/public_profile_screen.dart';
 import 'firebase_options.dart';
 
 // Sayfalar
@@ -33,6 +35,8 @@ class MyApp extends StatelessWidget {
       routes: {
         SignInPage.route: (_) => const SignInPage(),
         SignUpPage.route: (_) => const SignUpPage(),
+        FriendsScreen.routeName: (_) => const FriendsScreen(),
+        PublicProfileScreen.routeName: (_) => const PublicProfileScreen(),
       },
       // Başlangıç: Splash (logo ortada, sonra yukarı kayıp Auth durumuna göre yönlendirir)
       home: const SplashScreen(),

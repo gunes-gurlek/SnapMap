@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:snapmap/friends_screen.dart';
 import 'map_feed_screen.dart'; // Harita ekranınızın yolu
 import 'widgets/custom_top_bar.dart'; // Az önce oluşturduğumuz widget
 
@@ -22,7 +23,7 @@ class _MainLayoutState extends State<MainLayout> {
     const Center(child: Text('Profil Sayfası')),   // Index 0
     const Center(child: Text('Menü Sayfası')),    // Index 1
     const MapFeedScreen(),                        // Index 2 (Harita)
-    const Center(child: Text('Arkadaşlar Sayfası')), // Index 3
+    const FriendsScreen(), // Index 3
     const Center(child: Text('Ayarlar Sayfası')),  // Index 4
   ];
 
