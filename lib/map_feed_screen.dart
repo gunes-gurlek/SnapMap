@@ -1,37 +1,55 @@
+import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data'; // Uint8List için eklendi
-import 'dart:ui' as ui; // Canvas işlemleri için eklendi
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // ByteData için eklendi
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:firebase_database/firebase_database.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:http/http.dart' as http; // Network'ten resim çekmek için eklendi
+import 'package:http/http.dart' as http;
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 
-// --- VERİ MODELİ (Değişiklik yok) ---
 class Post {
-  // ... (Mevcut kodunuzdaki gibi)
   final String id;
   final String imageUrl;
   final String userPhotoUrl;
   final double lat, lng;
+  final String uid;
+  final DateTime? createdAt;
 
-  Post({required this.id, required this.imageUrl, required this.userPhotoUrl, required this.lat, required this.lng});
+  Post({
+    required this.id,
+    required this.imageUrl,
+    required this.userPhotoUrl,
+    required this.lat,
+    required this.lng,
+    required this.uid,
+    this.createdAt,
+  });
 
-  factory Post.fromMap(String id, Map m) => Post(
-    id: id,
-    imageUrl: m['imageUrl'],
-    userPhotoUrl: m['userPhotoUrl'] ?? '',
-    lat: (m['lat'] as num).toDouble(),
-    lng: (m['lng'] as num).toDouble(),
-  );
+  factory Post.fromDoc(DocumentSnapshot<Map<String, dynamic>> d) {
+    final m = d.data()!;
+    return Post(
+      id: d.id,
+      imageUrl: m['imageUrl'] ?? '',
+      userPhotoUrl: (m['userPhotoUrl'] ?? '') as String,
+      lat: (m['lat'] as num).toDouble(),
+      lng: (m['lng'] as num).toDouble(),
+      uid: (m['uid'] ?? '') as String,
+      createdAt: (m['createdAt'] is Timestamp)
+          ? (m['createdAt'] as Timestamp).toDate()
+          : null,
+    );
+  }
 }
 
-// --- SAYFA WIDGET'I ---
+final _fs = FirebaseFirestore.instance;
+
 class MapFeedScreen extends StatefulWidget {
   const MapFeedScreen({super.key});
   @override
@@ -39,22 +57,25 @@ class MapFeedScreen extends StatefulWidget {
 }
 
 class _MapFeedScreenState extends State<MapFeedScreen> {
-  // --- STATE DEĞİŞKENLERİ ---
   GoogleMapController? _map;
   LatLng _my = const LatLng(41.0082, 28.9784);
-  final _db = FirebaseDatabase.instance.ref();
+
   final _posts = <Post>[];
   final _overlayPositions = <String, Offset>{};
-  bool _updatingPositions = false;
 
-  // YENİ: Kendi konumumuzu gösterecek özel marker
   Marker? _myLocationMarker;
+  StreamSubscription? _followSub;
+  StreamSubscription? _postSub;
+  Timer? _recomputeDebounce;
 
   final List<String> _friendAvatars = [
-    'https:i.pravatar.cc/150?img=1', 'https:i.pravatar.cc/150?img=2',
-    'https:i.pravatar.cc/150?img=3', 'https:i.pravatar.cc/150?img=4',
-    'https:i.pravatar.cc/150?img=5', 'https:i.pravatar.cc/150?img=6',
-    'https:i.pravatar.cc/150?img=7',
+    'https://i.pravatar.cc/150?img=1',
+    'https://i.pravatar.cc/150?img=2',
+    'https://i.pravatar.cc/150?img=3',
+    'https://i.pravatar.cc/150?img=4',
+    'https://i.pravatar.cc/150?img=5',
+    'https://i.pravatar.cc/150?img=6',
+    'https://i.pravatar.cc/150?img=7',
   ];
 
   @override
@@ -64,301 +85,305 @@ class _MapFeedScreenState extends State<MapFeedScreen> {
     _listenPosts();
   }
 
-  // YENİ: Network'teki resmi dairesel bir marker ikonuna çeviren yardımcı fonksiyon
-  Future<BitmapDescriptor> _createCustomMarkerBitmap(String imageUrl, {int size = 150}) async {
+  // 🔹 Dairesel marker resmi oluşturur
+  Future<BitmapDescriptor> _createCustomMarkerBitmap(String imageUrl, {int size = 120}) async {
     final http.Response response = await http.get(Uri.parse(imageUrl));
     final Uint8List bytes = response.bodyBytes;
     final ui.Codec codec = await ui.instantiateImageCodec(bytes, targetWidth: size);
     final ui.FrameInfo frameInfo = await codec.getNextFrame();
     final ui.Image image = frameInfo.image;
 
-    final ui.PictureRecorder pictureRecorder = ui.PictureRecorder();
-    final Canvas canvas = Canvas(pictureRecorder);
+    final ui.PictureRecorder recorder = ui.PictureRecorder();
+    final Canvas canvas = Canvas(recorder);
+    final double radius = size / 2;
 
+    // Dış beyaz çerçeve
     final Paint borderPaint = Paint()..color = Colors.white;
-    final double borderRadius = size / 2;
+    canvas.drawCircle(Offset(radius, radius), radius, borderPaint);
 
-    // Beyaz dış çerçeveyi çiz
-    canvas.drawCircle(Offset(borderRadius, borderRadius), borderRadius, borderPaint);
-
-    final Paint paint = Paint();
-    final Path path = Path()
-      ..addOval(Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble()));
-
-    // Resmi dairesel olarak kırp
+    final Path path = Path()..addOval(Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble()));
     canvas.clipPath(path);
+    paintImage(canvas: canvas, rect: Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble()), image: image, fit: BoxFit.cover);
 
-    // Dairesel alana resmi çiz
-    paintImage(
-      canvas: canvas,
-      rect: Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble()),
-      image: image,
-      fit: BoxFit.cover,
-    );
-
-    final ui.Image CROP_IMAGE_ = await pictureRecorder.endRecording().toImage(size, size);
-    final ByteData? byteData = await CROP_IMAGE_.toByteData(format: ui.ImageByteFormat.png);
-    final Uint8List CROP_BYTES_ = byteData!.buffer.asUint8List();
-
-    return BitmapDescriptor.fromBytes(CROP_BYTES_);
+    final ui.Image markerImage = await recorder.endRecording().toImage(size, size);
+    final ByteData? byteData = await markerImage.toByteData(format: ui.ImageByteFormat.png);
+    return BitmapDescriptor.fromBytes(byteData!.buffer.asUint8List());
   }
 
-  // YENİ: Kullanıcının konumunu ve profil resmini alıp marker'ı güncelleyen fonksiyon
-  Future<void> _updateMyLocationMarker() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    final userSnap = await _db.child('users/${user.uid}').get();
-    String? photoUrl;
-    if (userSnap.value is Map) {
-      photoUrl = (userSnap.value as Map)['photoUrl'] as String?;
-    }
-    photoUrl ??= user.photoURL; // Eğer DB'de yoksa Auth'daki URL'i kullan
-
-    if (photoUrl == null || photoUrl.isEmpty || !mounted) return;
-
-    final BitmapDescriptor customIcon = await _createCustomMarkerBitmap(photoUrl);
-
-    if (mounted) {
-      setState(() {
-        _myLocationMarker = Marker(
-          markerId: const MarkerId('myLocation'),
-          position: _my,
-          icon: customIcon,
-          anchor: const Offset(0.5, 0.5), // Ortala
-        );
-      });
-    }
-  }
-
-
+  // 🔹 Konum al ve marker oluştur
   Future<void> _initLocation() async {
     final perm = await Geolocator.requestPermission();
     if (perm == LocationPermission.deniedForever || perm == LocationPermission.denied) return;
 
     final pos = await Geolocator.getCurrentPosition();
-    if (mounted) {
-      setState(() {
-        _my = LatLng(pos.latitude, pos.longitude);
-        _map?.animateCamera(CameraUpdate.newLatLng(_my)); // Haritayı konuma odakla
-      });
-      // Konum alındıktan sonra marker'ı oluştur/güncelle
-      _updateMyLocationMarker();
-    }
+    _my = LatLng(pos.latitude, pos.longitude);
+
+    _map?.animateCamera(CameraUpdate.newLatLngZoom(_my, 15));
+    _updateMyLocationMarker();
   }
 
-  // --- Diğer metodlarınız (Değişiklik yok) ---
-  void _listenPosts() {
-    // ...
-    _db.child('posts').limitToLast(200).onValue.listen((e) {
-      final val = e.snapshot.value as Map<Object?, Object?>?;
-      _posts.clear();
-      if (val != null) {
-        val.forEach((key, value) {
-          final m = Map<String, dynamic>.from(value as Map);
-          _posts.add(Post.fromMap(key as String, m));
-        });
-      }
-      if (mounted) {
-        setState(() {});
-        _recomputeOverlayPositions();
-      }
+  Future<void> _updateMyLocationMarker() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final doc = await _fs.collection('users').doc(user.uid).get();
+    final data = doc.data();
+    String? photoUrl = data?['photoUrl'] ?? user.photoURL;
+
+    if (photoUrl == null || photoUrl.isEmpty) return;
+    final icon = await _createCustomMarkerBitmap(photoUrl);
+
+    setState(() {
+      _myLocationMarker = Marker(
+        markerId: const MarkerId('me'),
+        position: _my,
+        icon: icon,
+        anchor: const Offset(0.5, 0.5),
+      );
     });
   }
 
-  Future<void> _recomputeOverlayPositions() async {
-    // ...
-    if (_map == null || !mounted || _updatingPositions) return;
-    _updatingPositions = true;
+  // 🔹 Firestore'dan postları dinle
+  void _listenPosts() {
+    final u = FirebaseAuth.instance.currentUser;
+    if (u == null) return;
 
-    final newPositions = <String, Offset>{};
-    for (final p in _posts) {
-      try {
-        final sc = await _map!.getScreenCoordinate(LatLng(p.lat, p.lng));
-        newPositions[p.id] = Offset(sc.x.toDouble(), sc.y.toDouble());
-      } catch (e) {
-        // Harita hazır değilse veya başka bir hata olursa yakala
+    final sinceMs = DateTime.now().millisecondsSinceEpoch - 24 * 60 * 60 * 1000;
+
+    // Basit: sadece kendim + son 24 saat
+    _postSub?.cancel();_postSub = _fs
+        .collection('posts')
+        .where('createdAtMs', isGreaterThanOrEqualTo: sinceMs)
+        .orderBy('createdAtMs', descending: true)
+        .snapshots()
+        .listen((snap) {
+      final all = snap.docs.map((d) => Post.fromDoc(d)).toList();
+
+      // 🔹 her kullanıcının yalnızca en yeni post’unu göster
+      final latestByUser = <String, Post>{};
+      for (final p in all) {
+        if (!latestByUser.containsKey(p.uid)) {
+          latestByUser[p.uid] = p; // zaten sıralama descending
+        }
       }
-    }
 
-    if (mounted) {
-      setState(() {
-        _overlayPositions.clear();
-        _overlayPositions.addAll(newPositions);
-      });
-    }
-    _updatingPositions = false;
+      _posts
+        ..clear()
+        ..addAll(latestByUser.values);
+
+      print("📸 Haritada gösterilecek post sayısı: ${_posts.length}");
+      if (!mounted) return;
+      setState(() {});
+      _recomputeOverlayPositions();
+    });
+
   }
+
+  // 🔹 Harita üzerindeki overlay konumlarını hesapla
+  Future<void> _recomputeOverlayPositions() async {
+    if (_map == null || !mounted) return;
+
+    _recomputeDebounce?.cancel();
+    _recomputeDebounce = Timer(const Duration(milliseconds: 80), () async {
+      if (_map == null || !mounted) return;
+
+      final dpr = MediaQuery.of(context).devicePixelRatio; // 👈 EKLE
+
+      final newPos = <String, Offset>{};
+      for (final p in _posts) {
+        try {
+          final sc = await _map!.getScreenCoordinate(LatLng(p.lat, p.lng));
+          // 👇 ESKİ: Offset(sc.x.toDouble(), sc.y.toDouble())
+          newPos[p.id] = Offset(sc.x / dpr, sc.y / dpr); // 👈 DÜZELTME
+        } catch (e) {
+          print("⚠️ Overlay pozisyon hatası: $e");
+        }
+      }
+
+      setState(() {
+        _overlayPositions
+          ..clear()
+          ..addAll(newPos);
+      });
+
+      print("🎯 Overlay hesaplanan adet: ${_overlayPositions.length}");
+    });
+  }
+
 
   void _onCameraMove(CameraPosition _) => _recomputeOverlayPositions();
 
+  // 🔹 Fotoğraf çekme ve paylaşma
   Future<void> _onCameraButton() async {
-    // ...
     final picker = ImagePicker();
     final x = await picker.pickImage(source: ImageSource.camera, imageQuality: 85);
-    if (x == null || !mounted) return;
+    if (x == null) return;
 
     showModalBottomSheet(
       context: context,
       builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.send),
-              title: const Text('Paylaş'),
-              onTap: () {
-                Navigator.pop(context);
-                _sharePhoto(x.path);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text('Tekrar Çek'),
-              onTap: () {
-                Navigator.pop(context);
-                _onCameraButton();
-              },
-            ),
-          ],
-        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.send),
+            title: const Text('Paylaş'),
+            onTap: () {
+              Navigator.pop(context);
+              _sharePhoto(x.path);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.camera_alt),
+            title: const Text('Tekrar Çek'),
+            onTap: () {
+              Navigator.pop(context);
+              _onCameraButton();
+            },
+          ),
+        ]),
       ),
     );
   }
 
-  Future<void> _sharePhoto(String localPath) async {
-    // ...
+  Future<void> _sharePhoto(String path) async {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Giriş yapmalısın')));
-      return;
-    }
+    if (user == null) return;
+
     final pos = await Geolocator.getCurrentPosition();
-    final fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final ref = FirebaseStorage.instance.ref().child('posts/${user.uid}/$fileName');
-    await ref.putFile(File(localPath));
+    final file = File(path);
+    final ref = FirebaseStorage.instance.ref().child('posts/${user.uid}/${DateTime.now().millisecondsSinceEpoch}.jpg');
+    await ref.putFile(file);
     final url = await ref.getDownloadURL();
 
-    final userSnap = await _db.child('users/${user.uid}').get();
-    final userPhotoUrl = (userSnap.value is Map && (userSnap.value as Map).containsKey('photoUrl'))
-        ? ((userSnap.value as Map)['photoUrl'] as String)
-        : (user.photoURL ?? '');
+    final doc = await _fs.collection('users').doc(user.uid).get();
+    final photoUrl = (doc.data()?['photoUrl'] as String?) ?? user.photoURL ?? '';
 
-    final postId = _db.child('posts').push().key!;
-    await _db.child('posts/$postId').set({
+    await _fs.collection('posts').add({
       'uid': user.uid,
       'imageUrl': url,
       'lat': pos.latitude,
       'lng': pos.longitude,
-      'userPhotoUrl': userPhotoUrl,
-      'createdAt': ServerValue.timestamp,
+      'userPhotoUrl': photoUrl,
+      'createdAt': FieldValue.serverTimestamp(),
+      'createdAtMs': DateTime.now().millisecondsSinceEpoch,
     });
-  }
 
-  Widget _buildBottomBar() {
-    // ...
-    return Positioned(
-      bottom: 24,
-      left: 16,
-      right: 16,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.9),
-          borderRadius: BorderRadius.circular(30),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.15),
-              blurRadius: 10,
-              spreadRadius: 2,
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                GestureDetector(
-                  onTap: _onCameraButton,
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: const BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                        boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 5)]
-                    ),
-                    child: const Icon(Icons.camera_alt, color: Colors.black),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: SizedBox(
-                    height: 50,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: _friendAvatars.length,
-                      itemBuilder: (context, index) {
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                          child: CircleAvatar(
-                            radius: 25,
-                            backgroundImage: NetworkImage(_friendAvatars[index]),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.only(top: 8),
-              decoration: BoxDecoration(
-                  color: Colors.grey.shade400,
-                  borderRadius: BorderRadius.circular(2)
-              ),
-            )
-          ],
-        ),
+    // Yeni postu haritada göster
+    _map?.animateCamera(CameraUpdate.newLatLngZoom(LatLng(pos.latitude, pos.longitude), 15));
+  }
+  void _openStoryViewer(String uid, String currentPostId) async {
+    final sinceMs = DateTime.now().millisecondsSinceEpoch - 24 * 60 * 60 * 1000;
+    final snap = await _fs
+        .collection('posts')
+        .where('uid', isEqualTo: uid)
+        .where('createdAtMs', isGreaterThanOrEqualTo: sinceMs)
+        .orderBy('createdAtMs', descending: true)
+        .get();
+
+    final userPosts = snap.docs.map((d) => Post.fromDoc(d)).toList();
+    if (userPosts.isEmpty) return;
+
+    final initialIndex = userPosts.indexWhere((p) => p.id == currentPostId);
+    final startIndex = (initialIndex < 0) ? 0 : initialIndex;
+
+    if (!mounted) return;
+    await Future.delayed(const Duration(milliseconds: 100)); // 🔹 küçük gecikme
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => StoryViewerPage(posts: userPosts, initialIndex: startIndex),
       ),
     );
   }
 
+
+
+  @override
+  void dispose() {
+    _followSub?.cancel();
+    _postSub?.cancel();
+    super.dispose();
+  }
+
+  // 🔹 Alt bar
+  Widget _buildBottomBar() => Positioned(
+    bottom: 24,
+    left: 16,
+    right: 16,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(30),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 10, spreadRadius: 2)],
+      ),
+      child: Row(children: [
+        GestureDetector(
+          onTap: _onCameraButton,
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [
+              BoxShadow(color: Colors.black12, blurRadius: 5)
+            ]),
+            child: const Icon(Icons.camera_alt, color: Colors.black),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: SizedBox(
+            height: 50,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _friendAvatars.length,
+              itemBuilder: (_, i) => Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                child: CircleAvatar(radius: 25, backgroundImage: NetworkImage(_friendAvatars[i])),
+              ),
+            ),
+          ),
+        ),
+      ]),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        GoogleMap(
-          initialCameraPosition: CameraPosition(target: _my, zoom: 14),
-          // DEĞİŞİKLİK: Standart mavi noktayı kapatıyoruz
-          myLocationEnabled: false,
-          myLocationButtonEnabled: false,
-          onMapCreated: (c) {
-            _map = c;
-            _recomputeOverlayPositions();
-          },
-          onCameraMove: _onCameraMove,
-          onCameraIdle: _recomputeOverlayPositions,
-          zoomControlsEnabled: false,
-          mapToolbarEnabled: false,
-          // YENİ: Oluşturduğumuz özel marker'ı haritaya ekliyoruz
-          markers: _myLocationMarker != null ? {_myLocationMarker!} : {},
-        ),
+    return Stack(children: [
+      GoogleMap(
+        initialCameraPosition: CameraPosition(target: _my, zoom: 14),
+        myLocationEnabled: false,
+        myLocationButtonEnabled: false,
+        onMapCreated: (c) async {
+          _map = c;
+          await Future.delayed(const Duration(milliseconds: 600));
+          _recomputeOverlayPositions();
+        },
+        onCameraMove: _onCameraMove,
+        onCameraIdle: _recomputeOverlayPositions,
+        zoomControlsEnabled: false,
+        mapToolbarEnabled: false,
+        markers: _myLocationMarker != null ? {_myLocationMarker!} : {},
+        gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+          Factory<PanGestureRecognizer>(() => PanGestureRecognizer()),   // haritayı sürükleme aktif
+          Factory<ScaleGestureRecognizer>(() => ScaleGestureRecognizer()), // zoom aktif
+          // TapGestureRecognizer bilerek eklenmiyor, çünkü tap'leri overlay'e geçmesini istiyoruz
+        },
 
-        // Fotoğraf overlay'leri (Değişiklik yok)
-        ..._posts.map((p) {
-          final pos = _overlayPositions[p.id];
-          if (pos == null) return const SizedBox.shrink();
-          const photoW = 110.0;
-          const photoH = 160.0;
-          const avatarR = 20.0;
+      ),
+      ..._posts.map((p) {
+        final pos = _overlayPositions[p.id];
+        if (pos == null) return const SizedBox.shrink();
 
-          return Positioned(
-            left: pos.dx - photoW / 2,
-            top: pos.dy - photoH - (avatarR * 2) - 6,
+        const photoW = 110.0;
+        const photoH = 160.0;
+        const avatarR = 20.0;
+
+        return Positioned(
+          left: pos.dx - photoW / 2,
+          top: pos.dy - photoH - avatarR * 2 - 6,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque, // 🔹 Bunu ekliyorsun
+            onTap: () => _openStoryViewer(p.uid, p.id),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -366,18 +391,15 @@ class _MapFeedScreenState extends State<MapFeedScreen> {
                   width: photoW,
                   height: photoH,
                   decoration: BoxDecoration(
-                      color: Colors.grey.shade200,
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: const [BoxShadow(blurRadius: 8, offset: Offset(0, 4), color: Colors.black26)],
-                      border: Border.all(color: Colors.white, width: 2.5)
+                    color: Colors.grey.shade200,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: const [
+                      BoxShadow(blurRadius: 8, offset: Offset(0, 4), color: Colors.black26)
+                    ],
+                    border: Border.all(color: Colors.white, width: 2.5),
                   ),
                   clipBehavior: Clip.antiAlias,
-                  child: CachedNetworkImage(
-                    imageUrl: p.imageUrl,
-                    fit: BoxFit.cover,
-                    placeholder: (context, url) => const Center(child: CircularProgressIndicator()),
-                    errorWidget: (context, url, error) => const Icon(Icons.error),
-                  ),
+                  child: CachedNetworkImage(imageUrl: p.imageUrl, fit: BoxFit.cover),
                 ),
                 const SizedBox(height: 8),
                 CircleAvatar(
@@ -385,16 +407,87 @@ class _MapFeedScreenState extends State<MapFeedScreen> {
                   backgroundColor: Colors.white,
                   child: CircleAvatar(
                     radius: avatarR - 2.5,
-                    backgroundImage: p.userPhotoUrl.isNotEmpty ? NetworkImage(p.userPhotoUrl) : null,
+                    backgroundImage: p.userPhotoUrl.isNotEmpty
+                        ? NetworkImage(p.userPhotoUrl)
+                        : null,
                     child: p.userPhotoUrl.isEmpty ? const Icon(Icons.person) : null,
                   ),
                 ),
               ],
             ),
-          );
-        }),
-        _buildBottomBar(),
-      ],
+          ),
+
+        );
+      }),
+
+      _buildBottomBar(),
+    ]);
+  }
+}
+class StoryViewerPage extends StatefulWidget {
+  final List<Post> posts;
+  final int initialIndex;
+  const StoryViewerPage({super.key, required this.posts, required this.initialIndex});
+
+  @override
+  State<StoryViewerPage> createState() => _StoryViewerPageState();
+}
+
+class _StoryViewerPageState extends State<StoryViewerPage> {
+  late final PageController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = PageController(initialPage: widget.initialIndex);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final posts = widget.posts;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        alignment: Alignment.center,
+        children: [
+          PageView.builder(
+            controller: _controller,
+            itemCount: posts.length,
+            itemBuilder: (_, i) {
+              final p = posts[i];
+              return Center(
+                child: CachedNetworkImage(
+                  imageUrl: p.imageUrl,
+                  fit: BoxFit.contain,
+                  placeholder: (_, __) => const CircularProgressIndicator(),
+                ),
+              );
+            },
+          ),
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 12,
+            left: 12,
+            right: 12,
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 20,
+                  backgroundImage: posts.first.userPhotoUrl.isNotEmpty
+                      ? NetworkImage(posts.first.userPhotoUrl)
+                      : null,
+                  child: posts.first.userPhotoUrl.isEmpty ? const Icon(Icons.person) : null,
+                ),
+                const Spacer(),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close, color: Colors.white),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
+
