@@ -86,25 +86,31 @@ class _SignUpPageState extends State<SignUpPage> {
     setState(() => _loading = true);
 
     try {
-      // 0) Check if username already exists
+      // 0) Username kontrolü
       final taken = await _isUsernameTaken(username);
       if (taken) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('This username is already taken. Please try another.')),
+          const SnackBar(
+            content: Text('Bu kullanıcı adı zaten kullanılıyor. Başka bir tane dene hocam.'),
+          ),
         );
         return;
       }
 
-      // 1) Create user in Firebase Auth
-      final cred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
+      // 1) Auth kullanıcısını oluştur
+      final cred = await _auth.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
       final uid = cred.user!.uid;
 
-      // 2) Upload profile picture (if selected)
+      // 2) Profil fotoğrafı (isteğe bağlı)
       final photoUrl = await _uploadProfileImage(uid);
 
-      // 3) Save user profile in Firestore
+      // 3) Firestore’da user belgesi
       await _firestore.collection('users').doc(uid).set({
+        'uid': uid,
         'firstName': firstName,
         'lastName': lastName,
         'username': username,
@@ -113,24 +119,57 @@ class _SignUpPageState extends State<SignUpPage> {
         'createdAt': FieldValue.serverTimestamp(),
       });
 
-      // 4) Update Firebase Auth display name and photo
+      // 4) Auth profilini güncelle
       await cred.user!.updateDisplayName('$firstName $lastName');
       if (photoUrl != null) {
         await cred.user!.updatePhotoURL(photoUrl);
       }
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Registration successful!')));
-      Navigator.of(context).pop(); // or navigate to main screen
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kayıt başarılı!')),
+      );
+      Navigator.of(context).pop(); // ya da ana ekrana yönlendir
     } on FirebaseAuthException catch (e) {
-      final msg = e.message ?? 'An error occurred during registration';
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-    } catch (e) {
+      String msg;
+      switch (e.code) {
+        case 'email-already-in-use':
+          msg = 'Bu email zaten kayıtlı hocam.';
+          break;
+        case 'invalid-email':
+          msg = 'Email formatı yanlış.';
+          break;
+        case 'weak-password':
+          msg = 'Şifre çok zayıf (en az 6 karakter).';
+          break;
+        default:
+          msg = e.message ?? 'Kayıt olurken bir auth hatası oluştu.';
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg)),
+      );
+    } on FirebaseException catch (e) {
+      // Firestore / Storage hataları (kurallar, izin vs.)
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Unexpected error')));
+      final msg = e.message ?? 'Veritabanı ile ilgili bir hata oluştu.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg)),
+      );
+    } catch (e, st) {
+      // Diğer tüm beklenmedik hatalar
+      // debugPrint ile logla ki console’da görebilesin
+      // (Android Studio console’da çıkacak)
+      // ignore: avoid_print
+      print('SIGN UP UNEXPECTED ERROR: $e\n$st');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Beklenmeyen bir hata oluştu.')),
+      );
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -144,7 +183,9 @@ class _SignUpPageState extends State<SignUpPage> {
     if (val.isEmpty) return 'Username cannot be empty';
     if (val.length < 3) return 'Username must be at least 3 characters';
     final re = RegExp(r'^[a-zA-Z0-9_\.]+$');
-    if (!re.hasMatch(val)) return 'Only letters, numbers, dot and underscore are allowed';
+    if (!re.hasMatch(val)) {
+      return 'Only letters, numbers, dot and underscore are allowed';
+    }
     return null;
   }
 
@@ -169,7 +210,7 @@ class _SignUpPageState extends State<SignUpPage> {
 
   @override
   Widget build(BuildContext context) {
-    final imageSize = 110.0;
+    const imageSize = 110.0;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Sign Up')),
@@ -188,7 +229,6 @@ class _SignUpPageState extends State<SignUpPage> {
                       errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                     ),
                     const SizedBox(height: 8),
-
                     Form(
                       key: _formKey,
                       child: Column(
@@ -198,49 +238,55 @@ class _SignUpPageState extends State<SignUpPage> {
                             child: CircleAvatar(
                               radius: imageSize / 2,
                               backgroundColor: Colors.grey[200],
-                              backgroundImage: _pickedImage != null ? FileImage(_pickedImage!) : null,
+                              backgroundImage:
+                              _pickedImage != null ? FileImage(_pickedImage!) : null,
                               child: _pickedImage == null
                                   ? Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: const [
                                   Icon(Icons.camera_alt_outlined, size: 30),
                                   SizedBox(height: 6),
-                                  Text('Select profile photo', style: TextStyle(fontSize: 12)),
+                                  Text(
+                                    'Select profile photo',
+                                    style: TextStyle(fontSize: 12),
+                                  ),
                                 ],
                               )
                                   : null,
                             ),
                           ),
                           const SizedBox(height: 18),
-
                           Row(
                             children: [
                               Expanded(
                                 child: TextFormField(
                                   controller: _firstNameCtrl,
-                                  decoration: const InputDecoration(labelText: 'First Name'),
-                                  validator: (v) => _validateNotEmpty(v, 'First name'),
+                                  decoration:
+                                  const InputDecoration(labelText: 'First Name'),
+                                  validator: (v) =>
+                                      _validateNotEmpty(v, 'First name'),
                                 ),
                               ),
                               const SizedBox(width: 12),
                               Expanded(
                                 child: TextFormField(
                                   controller: _lastNameCtrl,
-                                  decoration: const InputDecoration(labelText: 'Last Name'),
-                                  validator: (v) => _validateNotEmpty(v, 'Last name'),
+                                  decoration:
+                                  const InputDecoration(labelText: 'Last Name'),
+                                  validator: (v) =>
+                                      _validateNotEmpty(v, 'Last name'),
                                 ),
                               ),
                             ],
                           ),
                           const SizedBox(height: 12),
-
                           TextFormField(
                             controller: _usernameCtrl,
-                            decoration: const InputDecoration(labelText: 'Username'),
+                            decoration:
+                            const InputDecoration(labelText: 'Username'),
                             validator: _validateUsername,
                           ),
                           const SizedBox(height: 12),
-
                           TextFormField(
                             controller: _emailCtrl,
                             decoration: const InputDecoration(labelText: 'Email'),
@@ -248,34 +294,43 @@ class _SignUpPageState extends State<SignUpPage> {
                             validator: _validateEmail,
                           ),
                           const SizedBox(height: 12),
-
                           TextFormField(
                             controller: _passwordCtrl,
                             decoration: InputDecoration(
                               labelText: 'Password',
                               suffixIcon: IconButton(
-                                icon: Icon(_obscurePw ? Icons.visibility_off : Icons.visibility),
-                                onPressed: () => setState(() => _obscurePw = !_obscurePw),
+                                icon: Icon(
+                                  _obscurePw
+                                      ? Icons.visibility_off
+                                      : Icons.visibility,
+                                ),
+                                onPressed: () => setState(
+                                      () => _obscurePw = !_obscurePw,
+                                ),
                               ),
                             ),
                             obscureText: _obscurePw,
                             validator: _validatePassword,
                           ),
                           const SizedBox(height: 12),
-
                           TextFormField(
                             controller: _passwordConfirmCtrl,
                             decoration: InputDecoration(
                               labelText: 'Confirm Password',
                               suffixIcon: IconButton(
-                                icon: Icon(_obscurePw2 ? Icons.visibility_off : Icons.visibility),
-                                onPressed: () => setState(() => _obscurePw2 = !_obscurePw2),
+                                icon: Icon(
+                                  _obscurePw2
+                                      ? Icons.visibility_off
+                                      : Icons.visibility,
+                                ),
+                                onPressed: () => setState(
+                                      () => _obscurePw2 = !_obscurePw2,
+                                ),
                               ),
                             ),
                             obscureText: _obscurePw2,
                             validator: _validatePasswordConfirm,
                           ),
-
                           const SizedBox(height: 24),
                           SizedBox(
                             width: double.infinity,
@@ -286,15 +341,20 @@ class _SignUpPageState extends State<SignUpPage> {
                                   ? const SizedBox(
                                 width: 20,
                                 height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
                               )
                                   : const Text('Sign Up'),
                             ),
                           ),
                           const SizedBox(height: 12),
                           TextButton(
-                            onPressed: _loading ? null : () => Navigator.of(context).pop(),
-                            child: const Text('Already have an account? Sign In'),
+                            onPressed:
+                            _loading ? null : () => Navigator.of(context).pop(),
+                            child:
+                            const Text('Already have an account? Sign In'),
                           ),
                         ],
                       ),
@@ -303,12 +363,11 @@ class _SignUpPageState extends State<SignUpPage> {
                 ),
               ),
             ),
-
             if (_loading)
               Positioned.fill(
                 child: IgnorePointer(
                   child: Container(
-                    color: Colors.black.withOpacity(0.05),
+                    color: Colors.black26.withOpacity(0.05),
                   ),
                 ),
               ),
