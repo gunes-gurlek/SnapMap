@@ -1,16 +1,74 @@
-# snapmap
+# 📍 SnapMap
 
-Real-Time, Map-Based Photo Sharing Mobile Application
+SnapMap is a location-based social networking application developed with Flutter and Firebase. It enables users to discover friends on an interactive map, manage friendships, and communicate through real-time messaging.
 
-## Getting Started
+## ✨ Features
 
-This project is a starting point for a Flutter application.
+- 🔐 Firebase Authentication
+- 🗺️ Interactive map interface
+- 👤 User profiles
+- ➕ Send, accept, and reject friend requests
+- 👥 Follow / Unfollow system
+- 💬 Real-time chat between mutual friends
+- 🔥 Firebase Firestore integration
+- ☁️ Firebase Cloud Functions
+- 📱 Cross-platform Flutter application
 
-A few resources to get you started if this is your first Flutter project:
+## 🛠️ Technologies
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+- Flutter
+- Dart
+- Firebase Authentication
+- Cloud Firestore
+- Firebase Cloud Functions
+- Firebase Storage
+- Google Maps API
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## 📂 Project Structure
+
+```
+lib/
+ ├── models/
+ ├── screens/
+ ├── services/
+ ├── widgets/
+ └── main.dart
+```
+
+## 🚀 Getting Started
+
+1. Clone the repository
+
+```bash
+git clone https://github.com/gunes-gurlek/SnapMap.git
+```
+
+2. Install dependencies
+
+```bash
+flutter pub get
+```
+
+3. Configure Firebase for your project.
+
+4. Run the application
+
+```bash
+flutter run
+```
+
+## 📸 Screenshots
+
+You can add screenshots of the application here.
+
+## 👨‍💻 Developer
+
+**Güneş Gürlek**
+**Ata Eren Tekeli**
+**Mehmet Kaan Yılmam**
+
+Computer Engineering Graduate
+
+## 📄 License
+
+This project is for educational and portfolio purposes.
